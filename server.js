@@ -16,6 +16,14 @@ const MAX_BODY = 2 * 1024 * 1024;
 
 const BLOCK_RE = /(^|\.)(doubleclick\.net|googletagmanager\.com|google-analytics\.com)$/i;
 
+// ルート直下のパス前提でビルドされているログイン SPA は、
+// /__p/ を付けず同じパス構造のまま自ホストのルートに載せる。
+const ROOT_MOUNTS = new Map([['static-login.nvidia.com', '/service/gfn/']]);
+
+function mountFor(host) {
+  return ROOT_MOUNTS.get(String(host).toLowerCase()) || null;
+}
+
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
 
@@ -40,10 +48,11 @@ function mapUrl(value, base) {
     return value;
   }
 
+  const u = new URL(abs);
+  const mount = mountFor(u.host);
+  if (mount) return u.pathname + u.search + u.hash;
   if (!/^https:/i.test(abs)) return abs;
   if (!shouldProxy(abs)) return abs;
-
-  const u = new URL(abs);
   if (u.host === ORIGIN_HOST) return u.pathname + u.search + u.hash;
   return PREFIX + abs;
 }
@@ -223,6 +232,7 @@ const SHIM = `(function () {
   var P = ${JSON.stringify(PREFIX)};
   var OH = ${JSON.stringify(ORIGIN_HOST)};
   var BLOCK = new RegExp(${JSON.stringify(BLOCK_RE.source)}, 'i');
+  var ROOT = ${JSON.stringify([...ROOT_MOUNTS.keys()])};
   var LKEY = '__gfnLog';
 
   function base() {
@@ -245,6 +255,7 @@ const SHIM = `(function () {
       return P + 'https://' + url.host + url.pathname + url.search;
     }
     if (!/^https:/i.test(a)) return u;
+    if (ROOT.indexOf(url.host) !== -1) return url.pathname + url.search + url.hash;
     if (BLOCK.test(url.hostname)) return u;
     if (url.host === location.host) return url.pathname + url.search + url.hash;
     if (url.host === OH) return url.pathname + url.search + url.hash;
@@ -539,7 +550,10 @@ function normalizeTarget(raw, selfHost) {
 function toRealReferer(v) {
   if (!v) return ORIGIN + '/';
   try {
-    const u = new URL(v);
+    const u = new URL(v, ORIGIN);
+    for (const [host, mount] of ROOT_MOUNTS) {
+      if (u.pathname.startsWith(mount)) return 'https://' + host + u.pathname + u.search;
+    }
     if (u.pathname.startsWith(PREFIX)) {
       const t = normalizeTarget(u.pathname.slice(PREFIX.length) + u.search, u.host);
       if (t) return t.href;
@@ -630,7 +644,8 @@ function proxyFor(origin) {
         delete h[k];
       }
 
-      const cookiePath = isMainHost ? '/' : PREFIX + origin + '/';
+      const mount = mountFor(targetHost);
+      const cookiePath = isMainHost ? '/' : mount || PREFIX + origin + '/';
       if (h['set-cookie']) {
         const arr = Array.isArray(h['set-cookie']) ? h['set-cookie'] : [h['set-cookie']];
         h['set-cookie'] = arr.map((c) => {
@@ -712,6 +727,7 @@ const COOKIE_HOSTS = [
   'login.nvgs.nvidia.com',
   'accounts.nvgs.nvidia.com',
   'accounts.nvidia.com',
+  'static-login.nvidia.com',
 ];
 
 function fetchText(url, limit) {
@@ -828,6 +844,7 @@ app.get('/__clearcookies', (req, res) => {
   for (const n of names) {
     out.push(`${n}=; Path=/; Max-Age=0`);
     for (const h of COOKIE_HOSTS) out.push(`${n}=; Path=${PREFIX}https://${h}/; Max-Age=0`);
+    for (const [h, m] of ROOT_MOUNTS) out.push(`${n}=; Path=${m}; Max-Age=0`);
   }
   if (out.length) res.setHeader('set-cookie', out);
   res.type('text/plain');
@@ -909,6 +926,29 @@ app.use(PREFIX, async (req, res, next) => {
     );
   });
 });
+
+// ルート直下前提のログイン SPA は、同じパス構造のまま自ホストのルートに載せる
+for (const [host, mount] of ROOT_MOUNTS) {
+  app.use(mount.replace(/\/$/, ''), async (req, res) => {
+    const origin = 'https://' + host;
+    const target = new URL(origin + req.originalUrl);
+    if (!shouldProxy(target.href)) {
+      return res.status(403).type('text/plain').send('Not proxied: ' + target.host);
+    }
+
+    try {
+      await prepare(req, target);
+    } catch {}
+
+    req.__target = target.href;
+    req.__path = target.pathname + target.search;
+    req.url = req.__path;
+
+    return proxyFor(origin)(req, res, () =>
+      res.status(502).type('text/plain').send('no handler')
+    );
+  });
+}
 
 app.use(async (req, res) => {
   const target = new URL(ORIGIN + req.originalUrl);
