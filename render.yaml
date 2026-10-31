@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: GeForceNOW
+    runtime: node
+    plan: free
+    region: singapore
+    branch: main
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /__health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "20.11.1"
+      - key: BASIC_USER
+        sync: false
+      - key: BASIC_PASS
+        sync: false
