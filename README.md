@@ -30,12 +30,15 @@
 
 - ルート以下は `https://play.geforcenow.com` への透過プロキシ。
 - 他ホスト（`pcs.geforcenow.com`, `login.nvidia.com` など）の資産は `/__p/<絶対URL>` で中継。
+- **例外**: ルート直下のパス前提でビルドされているログイン SPA (`static-login.nvidia.com`) は
+  `/__p/` を付けず、`/service/gfn/` というパス構造を保ったまま自ホストのルートにマウントする
+  （`ROOT_MOUNTS`）。`/__p/` を付けると basename とアセットのベースパスが食い違って真っ黒になる。
 - HTML / CSS を書き換えて URL を `/__p/` 経由に付け替え、`CSP` / `X-Frame-Options` /
   `COOP` / `COEP` を剥がす。
 - ページに shim を注入し、`fetch` / XHR / WebSocket / EventSource / Worker / `location` /
   `window.open` / `sendBeacon` をすべて書き換える。
 - Cookie は `Domain` を落としてホストごとに `Path` を分離（`login.nvidia.com` と
-  `play.geforcenow.com` の衝突を防ぐ）。
+  `play.geforcenow.com` の衝突を防ぐ）。マウント先のホストはマウントパスに寄せる。
 - OAuth の `redirect_uri` は `play.geforcenow.com` 形式に戻し、戻り先 HTML は自前で配信する。
 
 ## エンドポイント
